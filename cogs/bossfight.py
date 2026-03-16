@@ -66,11 +66,87 @@ BOSSES = [
 ]
 
 # ---------------------------------------------------------
-# FLAVOR TEXT (unchanged)
+# FLAVOR TEXT
 # ---------------------------------------------------------
 
-FLAVOR_TEXT = { ... }  # KEEP YOUR EXISTING FLAVOR TEXT HERE
-PLAYER_FLAVOR = { ... }  # KEEP YOUR EXISTING PLAYER FLAVOR TEXT HERE
+FLAVOR_TEXT = {
+    "generic": [
+        "{boss} swings violently at {player}, dealing **{dmg}** damage!",
+        "{boss} slams the ground, sending a shockwave into {player} for **{dmg}** damage!",
+        "{boss} lunges forward and strikes {player} for **{dmg}** damage!",
+        "{boss} roars and smashes {player}, causing **{dmg}** damage!",
+        "{boss} charges and body-slams {player}, inflicting **{dmg}** damage!"
+    ],
+
+    "Ogre": [
+        "The Ogre hurls a massive boulder at {player}, crushing them for **{dmg}** damage!",
+        "The Ogre swings its heavy club into {player}, dealing **{dmg}** damage!",
+        "The Ogre stomps the ground, knocking {player} back for **{dmg}** damage!"
+    ],
+
+    "Dragon": [
+        "The Dragon breathes scorching flames at {player}, burning them for **{dmg}** damage!",
+        "The Dragon snaps its jaws at {player}, tearing into them for **{dmg}** damage!",
+        "The Dragon beats its wings, sending a fiery gust into {player} for **{dmg}** damage!"
+    ],
+
+    "Demon Lord": [
+        "The Demon Lord unleashes a blast of dark energy at {player}, dealing **{dmg}** damage!",
+        "The Demon Lord slashes through the air with shadow claws, striking {player} for **{dmg}** damage!",
+        "The Demon Lord whispers a curse, causing {player} to suffer **{dmg}** damage!"
+    ],
+
+    "Titan": [
+        "The Titan stomps the earth, sending tremors into {player} for **{dmg}** damage!",
+        "The Titan swings its colossal fist into {player}, crushing them for **{dmg}** damage!",
+        "The Titan rips a chunk of stone from the ground and hurls it at {player} for **{dmg}** damage!"
+    ],
+
+    "critical": [
+        "💥 **CRITICAL HIT!** {boss} unleashes a devastating blow on {player} for **{dmg}** damage!",
+        "⚡ {boss} channels immense power and obliterates {player} for **{dmg}** damage!",
+        "🔥 {boss} lands a brutal, bone-shattering strike on {player} for **{dmg}** damage!"
+    ]
+}
+
+PLAYER_FLAVOR = {
+    "attack": [
+        "{player} charges forward and strikes the {boss} for **{dmg}** damage!",
+        "{player} leaps in and slashes the {boss}, dealing **{dmg}** damage!",
+        "{player} swings fiercely at the {boss}, hitting for **{dmg}** damage!",
+        "{player} attacks with precision, striking the {boss} for **{dmg}** damage!"
+    ],
+
+    "attack_sword": [
+        "⚔️ {player}'s sword glows as they slash the {boss} for **{dmg}** damage!",
+        "⚔️ {player} swings their sword with force, cutting the {boss} for **{dmg}** damage!",
+        "⚔️ {player}'s blade slices through the air, striking the {boss} for **{dmg}** damage!"
+    ],
+
+    "protect": [
+        "{player} raises their guard, preparing to reduce incoming damage!",
+        "{player} braces for impact, ready to withstand the next attack!",
+        "{player} takes a defensive stance, minimizing the next hit!"
+    ],
+
+    "apple": [
+        "🍎 {player} eats an apple and restores **{heal}** HP!",
+        "🍎 {player} munches on an apple, recovering **{heal}** HP!",
+        "🍎 {player} quickly eats an apple, healing **{heal}** HP!"
+    ],
+
+    "potion": [
+        "🧪 {player} drinks a potion, increasing their max HP by **20**!",
+        "🧪 {player} gulps down a potion, boosting their vitality!",
+        "🧪 {player} consumes a potion, feeling stronger and healthier!"
+    ],
+
+    "run": [
+        "🏃 {player} flees the battle!",
+        "🏃 {player} decides this fight isn’t worth dying for and runs!",
+        "🏃 {player} escapes from the battlefield!"
+    ]
+}
 
 # ---------------------------------------------------------
 # BOSS FIGHT CLASS
