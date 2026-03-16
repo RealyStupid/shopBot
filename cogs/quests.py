@@ -150,7 +150,7 @@ class Quests(commands.Cog):
     @commands.guild_only()
     async def questsetchannel(self, ctx, channel: discord.TextChannel):
         # Must be server owner OR bot owner
-        if ctx.author.id != ctx.guild.owner_id and ctx.author.id != self.bot.owner_id:
+        if ctx.author.id != ctx.guild.owner_id or ctx.author.id != self.bot.owner_id:
             return await ctx.send("❌ You must be the **server owner** or **bot owner** to use this command.")
 
         await self.set_guild_channel(ctx.guild.id, channel.id)
