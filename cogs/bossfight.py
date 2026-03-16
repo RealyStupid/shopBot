@@ -1,10 +1,30 @@
-﻿import discord
+﻿# bossfight.py
+import discord
 from discord.ext import commands
 from discord import app_commands
 import asyncio
 import random
 import json
 import aiosqlite
+
+# ---------------------------------------------------------
+# IMPORT RARITY BONUSES FROM ECONOMY SYSTEM
+# ---------------------------------------------------------
+
+RARITY_BONUS = {
+    "common": 0,
+    "uncommon": 3,
+    "rare": 7,
+    "legendary": 12,
+    "godlike": 20,
+}
+
+WEAPON_TYPES = ["sword", "axe", "dagger", "bow", "staff"]
+DEFENSIVE_TYPES = ["shield", "armor"]
+
+BASE_HEALTH = 100
+BASE_DAMAGE = 5
+BASE_DEFENSE = 0
 
 # ---------------------------------------------------------
 # BOSS DEFINITIONS
@@ -46,91 +66,11 @@ BOSSES = [
 ]
 
 # ---------------------------------------------------------
-# BOSS FLAVOR TEXT
+# FLAVOR TEXT (unchanged)
 # ---------------------------------------------------------
 
-FLAVOR_TEXT = {
-    "generic": [
-        "{boss} swings violently at {player}, dealing **{dmg}** damage!",
-        "{boss} slams the ground, sending a shockwave into {player} for **{dmg}** damage!",
-        "{boss} lunges forward and strikes {player} for **{dmg}** damage!",
-        "{boss} roars and smashes {player}, causing **{dmg}** damage!",
-        "{boss} charges and body-slams {player}, inflicting **{dmg}** damage!"
-    ],
-
-    "Ogre": [
-        "The Ogre hurls a massive boulder at {player}, crushing them for **{dmg}** damage!",
-        "The Ogre swings its heavy club into {player}, dealing **{dmg}** damage!",
-        "The Ogre stomps the ground, knocking {player} back for **{dmg}** damage!"
-    ],
-
-    "Dragon": [
-        "The Dragon breathes scorching flames at {player}, burning them for **{dmg}** damage!",
-        "The Dragon snaps its jaws at {player}, tearing into them for **{dmg}** damage!",
-        "The Dragon beats its wings, sending a fiery gust into {player} for **{dmg}** damage!"
-    ],
-
-    "Demon Lord": [
-        "The Demon Lord unleashes a blast of dark energy at {player}, dealing **{dmg}** damage!",
-        "The Demon Lord slashes through the air with shadow claws, striking {player} for **{dmg}** damage!",
-        "The Demon Lord whispers a curse, causing {player} to suffer **{dmg}** damage!"
-    ],
-
-    "Titan": [
-        "The Titan stomps the earth, sending tremors into {player} for **{dmg}** damage!",
-        "The Titan swings its colossal fist into {player}, crushing them for **{dmg}** damage!",
-        "The Titan rips a chunk of stone from the ground and hurls it at {player} for **{dmg}** damage!"
-    ],
-
-    "critical": [
-        "💥 **CRITICAL HIT!** {boss} unleashes a devastating blow on {player} for **{dmg}** damage!",
-        "⚡ {boss} channels immense power and obliterates {player} for **{dmg}** damage!",
-        "🔥 {boss} lands a brutal, bone-shattering strike on {player} for **{dmg}** damage!"
-    ]
-}
-
-# ---------------------------------------------------------
-# PLAYER FLAVOR TEXT
-# ---------------------------------------------------------
-
-PLAYER_FLAVOR = {
-    "attack": [
-        "{player} charges forward and strikes the {boss} for **{dmg}** damage!",
-        "{player} leaps in and slashes the {boss}, dealing **{dmg}** damage!",
-        "{player} swings fiercely at the {boss}, hitting for **{dmg}** damage!",
-        "{player} attacks with precision, striking the {boss} for **{dmg}** damage!"
-    ],
-
-    "attack_sword": [
-        "⚔️ {player}'s sword glows as they slash the {boss} for **{dmg}** damage!",
-        "⚔️ {player} swings their sword with force, cutting the {boss} for **{dmg}** damage!",
-        "⚔️ {player}'s blade slices through the air, striking the {boss} for **{dmg}** damage!"
-    ],
-
-    "protect": [
-        "{player} raises their guard, preparing to reduce incoming damage!",
-        "{player} braces for impact, ready to withstand the next attack!",
-        "{player} takes a defensive stance, minimizing the next hit!"
-    ],
-
-    "apple": [
-        "🍎 {player} eats an apple and restores **{heal}** HP!",
-        "🍎 {player} munches on an apple, recovering **{heal}** HP!",
-        "🍎 {player} quickly eats an apple, healing **{heal}** HP!"
-    ],
-
-    "potion": [
-        "🧪 {player} drinks a potion, increasing their max HP by **20**!",
-        "🧪 {player} gulps down a potion, boosting their vitality!",
-        "🧪 {player} consumes a potion, feeling stronger and healthier!"
-    ],
-
-    "run": [
-        "🏃 {player} flees the battle!",
-        "🏃 {player} decides this fight isn’t worth dying for and runs!",
-        "🏃 {player} escapes from the battlefield!"
-    ]
-}
+FLAVOR_TEXT = { ... }  # KEEP YOUR EXISTING FLAVOR TEXT HERE
+PLAYER_FLAVOR = { ... }  # KEEP YOUR EXISTING PLAYER FLAVOR TEXT HERE
 
 # ---------------------------------------------------------
 # BOSS FIGHT CLASS
@@ -142,22 +82,33 @@ class BossFight:
         self.channel = channel
         self.boss_hp = boss["hp"]
         self.boss_max_hp = boss["hp"]
-        self.players = {}  # user_id -> state dict
+        self.players = {}
         self.turn_order = []
         self.current_turn_index = 0
         self.active = False
         self.joining = True
         self.killing_blow_user_id = None
 
-    def add_player(self, user: discord.Member, base_max_hp: int, inventory: dict):
+    def add_player(self, user: discord.Member, inventory: dict):
         if user.id in self.players:
             return
-        max_hp = base_max_hp + 20 * inventory.get("potion_maxhp_bonus", 0)
+
+        # Load equipped gear
+        equipped = inventory.get("equipped", {})
+        weapon = equipped.get("weapon")
+        defense_item = equipped.get("defense")
+
+        # Base + potion HP bonus
+        potion_bonus = inventory.get("potion_maxhp_bonus", 0)
+        max_hp = BASE_HEALTH + (20 * potion_bonus)
+
         self.players[user.id] = {
             "user": user,
             "hp": max_hp,
             "max_hp": max_hp,
             "inventory": inventory,
+            "equipped_weapon": weapon,
+            "equipped_defense": defense_item,
             "protecting": False,
             "alive": True
         }
@@ -195,19 +146,23 @@ class BossFight:
     def is_wipe(self):
         return len(self.alive_players()) == 0
 
-#SETUPS
+
 JOIN_DURATION = 60
 JOIN_COUNTDOWN_INTERVAL = 20
 TURN_TIMEOUT = 30
 
 # ---------------------------------------------------------
-# THE MAIN FIGHT
+# MAIN COG
 # ---------------------------------------------------------
 
 class BossFightCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.fights = {}  # guild_id -> BossFight
+        self.fights = {}
+
+    # -----------------------------
+    # DB HELPERS
+    # -----------------------------
 
     async def get_user(self, user_id: int):
         async with aiosqlite.connect("economy.db") as db:
@@ -235,102 +190,73 @@ class BossFightCog(commands.Cog):
             await db.commit()
 
     # ---------------------------------------------------------
-    # /bossfight COMMAND
+    # /bossfight
     # ---------------------------------------------------------
+
     @app_commands.command(name="bossfight", description="Start a server-wide boss fight.")
     async def bossfight(self, interaction: discord.Interaction):
-        if interaction.guild is None:
-            return await interaction.response.send_message(
-                "This command can only be used in a server.",
-                ephemeral=True
-            )
+        guild = interaction.guild
+        if guild is None:
+            return await interaction.response.send_message("Use this in a server.", ephemeral=True)
 
-        guild_id = interaction.guild.id
+        guild_id = guild.id
 
-        # Prevent multiple fights
         if guild_id in self.fights and (self.fights[guild_id].active or self.fights[guild_id].joining):
-            return await interaction.response.send_message(
-                "❌ A boss fight is already active or forming in this server.",
-                ephemeral=True
-            )
+            return await interaction.response.send_message("A boss fight is already active.", ephemeral=True)
 
-        channel = interaction.channel
-
-        # Pick a random boss
         boss = random.choice(BOSSES)
-        fight = BossFight(boss, channel)
+        fight = BossFight(boss, interaction.channel)
         self.fights[guild_id] = fight
 
-        # Announce boss
         await interaction.response.send_message(
-            f"💀 **A Threat Level {boss['threat']} {boss['name']} has appeared!**\n"
+            f"💀 **A Threat Level {boss['threat']} {boss['name']} appears!**\n"
             f"HP: **{boss['hp']}**\n"
             f"Damage: **{boss['damage'][0]}–{boss['damage'][1]}**\n"
-            f"Reward: **${boss['reward']}** (+${boss['bonus']} killing blow bonus)\n\n"
-            f"Type `join` to enter the fight! You have **{JOIN_DURATION} seconds** to join."
+            f"Reward: **${boss['reward']}** (+${boss['bonus']} bonus)\n\n"
+            f"Type `join` to enter! **{JOIN_DURATION} seconds**."
         )
 
-        # Start join countdown
         self.bot.loop.create_task(self.join_countdown(fight, guild_id))
 
     # ---------------------------------------------------------
     # JOIN COUNTDOWN
     # ---------------------------------------------------------
+
     async def join_countdown(self, fight: BossFight, guild_id: int):
         remaining = JOIN_DURATION
 
         while remaining > 0 and fight.joining:
             if remaining in (60, 40, 20):
-                await fight.channel.send(
-                    f"⏳ **{remaining} seconds** left to join the boss fight! Type `join` to enter!"
-                )
-
+                await fight.channel.send(f"⏳ **{remaining} seconds** left to join!")
             await asyncio.sleep(JOIN_COUNTDOWN_INTERVAL)
             remaining -= JOIN_COUNTDOWN_INTERVAL
 
-        # If joining was manually closed
-        if not fight.joining:
-            return
-
         fight.joining = False
 
-        # No players joined
         if len(fight.players) == 0:
-            await fight.channel.send("❌ No one joined the boss fight. The boss wanders away...")
+            await fight.channel.send("❌ No one joined. The boss wanders away...")
             self.fights.pop(guild_id, None)
             return
 
-        await fight.channel.send("⛔ **Joining is now closed!**")
-
-        # Solo or multiplayer
-        if len(fight.players) == 1:
-            await fight.channel.send("⚔️ **Solo mode activated!** You face the boss alone!")
-        else:
-            await fight.channel.send("⚔️ **The battle begins!** Turn order has been set.")
-
-        # Start the battle
+        await fight.channel.send("⛔ Joining closed!")
         fight.start_battle()
 
-        # ---------------------------------------------------------
-        # INFO SCREEN
-        # ---------------------------------------------------------
         await fight.channel.send(
-            "📘 **How to Fight**\n\n"
-            "During your turn, type one of the following actions:\n\n"
-            "⚔️ `attack` — Deal damage to the boss (sword increases damage)\n"
-            "🛡️ `protect` — Reduce incoming damage (shield increases protection)\n"
-            "🍎 `apple` — Heal yourself (consumes an apple)\n"
-            "🧪 `potion` — Increase your max HP (consumes a potion)\n"
-            "🏃 `run` — Leave the fight\n\n"
-            f"⏱️ You have **{TURN_TIMEOUT} seconds** to act on your turn."
+            "📘 **How to Fight**\n"
+            "`attack` — Deal damage (weapon increases damage)\n"
+            "`protect` — Reduce incoming damage (armor/shield helps)\n"
+            "`apple` — Heal 20 HP\n"
+            "`potion` — Increase max HP by 20\n"
+            "`run` — Leave the fight\n"
+            f"⏱️ **{TURN_TIMEOUT} seconds** per turn."
         )
 
-        # Begin turn loop
         self.bot.loop.create_task(self.turn_loop(fight, guild_id))
 
     # ---------------------------------------------------------
-    # PLAYER JOINING VIA MESSAGE
+    # PLAYER TYPING "join"
     # ---------------------------------------------------------
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot or message.guild is None:
@@ -339,36 +265,25 @@ class BossFightCog(commands.Cog):
         guild_id = message.guild.id
         fight = self.fights.get(guild_id)
 
-        # If no fight or not in join phase
         if not fight or not fight.joining:
             return
-
-        # Must be in the same channel
         if message.channel.id != fight.channel.id:
             return
 
-        # Player typed "join"
         if message.content.lower().strip() == "join":
             money, inv = await self.get_user(message.author.id)
+            fight.add_player(message.author, inv)
 
-            # Permanent potion bonus
-            bonus_count = inv.get("potion_maxhp_bonus", 0)
-            base_max_hp = 100
-            max_hp = base_max_hp + 20 * bonus_count
-
-            fight.add_player(message.author, base_max_hp, inv)
-
-            await message.channel.send(
-                f"✅ {message.author.mention} has joined the boss fight! (HP: {max_hp})"
-            )
+            max_hp = fight.players[message.author.id]["max_hp"]
+            await message.channel.send(f"✅ {message.author.mention} joined! (HP: {max_hp})")
 
     # ---------------------------------------------------------
     # TURN LOOP
     # ---------------------------------------------------------
+
     async def turn_loop(self, fight: BossFight, guild_id: int):
         while fight.active:
 
-            # Check win/lose
             if fight.is_boss_dead():
                 await self.handle_victory(fight, guild_id)
                 return
@@ -389,70 +304,55 @@ class BossFightCog(commands.Cog):
                 fight.next_turn()
                 continue
 
-            # ---------------------------------------------------------
+            # -------------------------
             # STAT PANEL
-            # ---------------------------------------------------------
-            inv = state["inventory"]
-            sword = "Yes" if "sword" in inv else "No"
-            shield = "Yes" if "shield" in inv else "No"
-            apples = inv.get("apple", 0)
-            potions = inv.get("potion", 0)
+            # -------------------------
+            weapon = state["equipped_weapon"]
+            defense_item = state["equipped_defense"]
+
+            weapon_text = f"{weapon['name']} ({weapon['rarity'].capitalize()})" if weapon else "None"
+            defense_text = f"{defense_item['name']} ({defense_item['rarity'].capitalize()})" if defense_item else "None"
+
+            apples = state["inventory"].get("apple", 0)
+            potions = state["inventory"].get("potion", 0)
 
             await fight.channel.send(
-                f"🔔 {user.mention} — **it's your turn!**\n\n"
-                f"❤️ **HP:** {state['hp']} / {state['max_hp']}\n"
-                f"🛡️ **Protecting:** {'Yes' if state['protecting'] else 'No'}\n"
-                f"⚔️ **Sword:** {sword}\n"
-                f"🛡️ **Shield:** {shield}\n"
-                f"🍎 **Apples:** {apples}\n"
-                f"🧪 **Potions:** {potions}\n\n"
+                f"🔔 {user.mention}, **your turn!**\n\n"
+                f"❤️ HP: {state['hp']} / {state['max_hp']}\n"
+                f"🗡️ Weapon: {weapon_text}\n"
+                f"🛡️ Defense: {defense_text}\n"
+                f"🍎 Apples: {apples}\n"
+                f"🧪 Potions: {potions}\n\n"
                 "Choose: `attack`, `protect`, `apple`, `potion`, `run`"
             )
 
-            # ---------------------------------------------------------
-            # WAIT FOR PLAYER ACTION
-            # ---------------------------------------------------------
             try:
                 action = await self.wait_for_action(fight, user)
             except asyncio.TimeoutError:
-                await fight.channel.send(f"⏳ {user.mention} took too long. **Turn skipped.**")
+                await fight.channel.send(f"⏳ {user.mention} took too long. Turn skipped.")
                 fight.next_turn()
                 continue
 
-            # ---------------------------------------------------------
-            # PROCESS ACTION
-            # ---------------------------------------------------------
             await self.process_action(fight, guild_id, user, action)
 
-            # Boss dead?
             if fight.is_boss_dead():
                 await self.handle_victory(fight, guild_id)
                 return
 
-            # Player died or ran?
             if fight.is_wipe():
                 await self.handle_defeat(fight, guild_id)
                 return
 
-            # ---------------------------------------------------------
-            # NEXT TURN OR BOSS TURN
-            # ---------------------------------------------------------
             prev_index = fight.current_turn_index
-            next_id = fight.next_turn()
+            fight.next_turn()
 
-            if next_id is None:
-                await self.handle_defeat(fight, guild_id)
-                return
-
-            # Boss turn:
-            # - If we wrapped around (multiplayer)
-            # - OR if there is only one player (solo mode)
             if len(fight.turn_order) == 1 or fight.current_turn_index < prev_index:
                 await self.boss_turn(fight, guild_id)
 
     # ---------------------------------------------------------
     # WAIT FOR ACTION
     # ---------------------------------------------------------
+
     async def wait_for_action(self, fight: BossFight, user: discord.Member):
         def check(msg: discord.Message):
             return (
@@ -460,42 +360,36 @@ class BossFightCog(commands.Cog):
                 and msg.channel.id == fight.channel.id
                 and msg.content.lower().strip() in ("attack", "protect", "apple", "potion", "run")
             )
-
         msg = await self.bot.wait_for("message", timeout=TURN_TIMEOUT, check=check)
         return msg.content.lower().strip()
 
     # ---------------------------------------------------------
     # PROCESS PLAYER ACTION
     # ---------------------------------------------------------
+
     async def process_action(self, fight: BossFight, guild_id: int, user: discord.Member, action: str):
         state = fight.players[user.id]
         money, inventory = await self.get_user(user.id)
-        state["inventory"] = inventory  # sync
+        state["inventory"] = inventory
 
         # -------------------------
         # ATTACK
         # -------------------------
         if action == "attack":
-            base_min, base_max = 15, 25
-            using_sword = "sword" in inventory
+            weapon = state["equipped_weapon"]
+            rarity_bonus = 0
 
-            if using_sword:
-                base_min += 5
-                base_max += 10
+            if weapon:
+                rarity_bonus = RARITY_BONUS.get(weapon["rarity"], 0)
 
-            dmg = random.randint(base_min, base_max)
+            dmg = BASE_DAMAGE + rarity_bonus
+
             fight.boss_hp = max(0, fight.boss_hp - dmg)
 
-            # Killing blow?
             if fight.boss_hp == 0:
                 fight.killing_blow_user_id = user.id
 
-            # Flavor text
-            if using_sword:
-                line = random.choice(PLAYER_FLAVOR["attack_sword"])
-            else:
-                line = random.choice(PLAYER_FLAVOR["attack"])
-
+            line = random.choice(PLAYER_FLAVOR["attack"])
             await fight.channel.send(
                 line.format(player=user.mention, boss=fight.boss["name"], dmg=dmg)
             )
@@ -514,7 +408,7 @@ class BossFightCog(commands.Cog):
         elif action == "apple":
             apples = inventory.get("apple", 0)
             if apples <= 0:
-                await fight.channel.send(f"🍎 {user.mention} tried to use an apple, but has none!")
+                await fight.channel.send(f"🍎 {user.mention} has no apples!")
             else:
                 heal = 20
                 old_hp = state["hp"]
@@ -528,9 +422,7 @@ class BossFightCog(commands.Cog):
 
                 healed = state["hp"] - old_hp
                 line = random.choice(PLAYER_FLAVOR["apple"])
-                await fight.channel.send(
-                    line.format(player=user.mention, heal=healed)
-                )
+                await fight.channel.send(line.format(player=user.mention, heal=healed))
 
         # -------------------------
         # POTION
@@ -538,7 +430,7 @@ class BossFightCog(commands.Cog):
         elif action == "potion":
             potions = inventory.get("potion", 0)
             if potions <= 0:
-                await fight.channel.send(f"🧪 {user.mention} tried to use a potion, but has none!")
+                await fight.channel.send(f"🧪 {user.mention} has no potions!")
             else:
                 inventory["potion"] = potions - 1
                 if inventory["potion"] <= 0:
@@ -564,13 +456,13 @@ class BossFightCog(commands.Cog):
             await fight.channel.send(line.format(player=user.mention))
             return
 
-        # Reset protection if not used
         if action != "protect":
             state["protecting"] = False
 
     # ---------------------------------------------------------
     # BOSS TURN
     # ---------------------------------------------------------
+
     async def boss_turn(self, fight: BossFight, guild_id: int):
         if fight.is_boss_dead() or fight.is_wipe():
             return
@@ -581,20 +473,24 @@ class BossFightCog(commands.Cog):
         dmg_min, dmg_max = fight.boss["damage"]
         dmg = random.randint(dmg_min, dmg_max)
 
-        # Damage reduction
         reduction = 0.0
-        if target_state["protecting"]:
-            reduction += 0.3
-        if "shield" in target_state["inventory"]:
-            reduction += 0.2
 
-        reduction = min(reduction, 0.8)
+        if target_state["protecting"]:
+            reduction += 0.30
+
+        defense_item = target_state["equipped_defense"]
+        if defense_item:
+            rarity = defense_item["rarity"]
+            rarity_bonus = RARITY_BONUS.get(rarity, 0)
+            reduction += (rarity_bonus / 100)
+
+        reduction = min(reduction, 0.80)
+
         final_dmg = max(1, int(dmg * (1 - reduction)))
 
         target_state["hp"] -= final_dmg
         target_state["protecting"] = False
 
-        # Flavor text selection
         boss_name = fight.boss["name"]
 
         if final_dmg > dmg_max * 0.75:
@@ -608,7 +504,16 @@ class BossFightCog(commands.Cog):
             line.format(boss=boss_name, player=target.mention, dmg=final_dmg)
         )
 
-        # Player death
+        await fight.channel.send(
+            f"📊 **{boss_name} Stats**\n"
+            f"❤️ HP: {fight.boss_hp} / {fight.boss_max_hp}\n"
+            f"⚔️ Damage: {dmg_min}–{dmg_max}"
+        )
+
+        await fight.channel.send(
+            f"🩸 {target.mention} now has **{target_state['hp']} / {target_state['max_hp']} HP**."
+        )
+
         if target_state["hp"] <= 0:
             target_state["hp"] = 0
             target_state["alive"] = False
@@ -618,29 +523,29 @@ class BossFightCog(commands.Cog):
                 if fight.current_turn_index >= len(fight.turn_order):
                     fight.current_turn_index = 0
 
-            await fight.channel.send(
-                f"💀 {target.mention} has **fallen** in battle!"
-            )
+            await fight.channel.send(f"💀 {target.mention} has fallen!")
 
-    # ---------------------------------------------------------
+        # ---------------------------------------------------------
     # VICTORY
     # ---------------------------------------------------------
     async def handle_victory(self, fight: BossFight, guild_id: int):
         fight.active = False
         survivors = fight.alive_players()
-
         boss = fight.boss
+
         await fight.channel.send(
             f"🎉 **The {boss['name']} has been defeated!**\n"
             f"All surviving players earn **${boss['reward']}**!"
         )
 
+        # Reward all survivors
         for state in survivors:
             user = state["user"]
             money, inv = await self.get_user(user.id)
             money += boss["reward"]
             await self.update_user(user.id, money, inv)
 
+        # Killing blow bonus
         if fight.killing_blow_user_id:
             killer = fight.players[fight.killing_blow_user_id]["user"]
             money, inv = await self.get_user(killer.id)
@@ -651,6 +556,7 @@ class BossFightCog(commands.Cog):
                 f"🏅 {killer.mention} dealt the **killing blow** and earns an extra **${boss['bonus']}**!"
             )
 
+        # Cleanup
         self.fights.pop(guild_id, None)
 
     # ---------------------------------------------------------
@@ -658,11 +564,14 @@ class BossFightCog(commands.Cog):
     # ---------------------------------------------------------
     async def handle_defeat(self, fight: BossFight, guild_id: int):
         fight.active = False
-        await fight.channel.send(
-            f"💀 The **{fight.boss['name']}** stands victorious. All challengers have fallen or fled..."
-        )
-        self.fights.pop(guild_id, None)
+        boss = fight.boss["name"]
 
+        await fight.channel.send(
+            f"💀 The **{boss}** stands victorious. All challengers have fallen or fled..."
+        )
+
+        # Cleanup
+        self.fights.pop(guild_id, None)
 
 # ---------------------------------------------------------
 # COG SETUP
