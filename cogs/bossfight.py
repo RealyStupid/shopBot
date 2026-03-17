@@ -1,30 +1,10 @@
-﻿# bossfight.py
-import discord
+﻿import discord
 from discord.ext import commands
 from discord import app_commands
 import asyncio
 import random
 import json
 import aiosqlite
-
-# ---------------------------------------------------------
-# IMPORT RARITY BONUSES FROM ECONOMY SYSTEM
-# ---------------------------------------------------------
-
-RARITY_BONUS = {
-    "common": 0,
-    "uncommon": 3,
-    "rare": 7,
-    "legendary": 12,
-    "godlike": 20,
-}
-
-WEAPON_TYPES = ["sword", "axe", "dagger", "bow", "staff"]
-DEFENSIVE_TYPES = ["shield", "armor"]
-
-BASE_HEALTH = 100
-BASE_DAMAGE = 5
-BASE_DEFENSE = 0
 
 # ---------------------------------------------------------
 # BOSS DEFINITIONS
@@ -109,6 +89,10 @@ FLAVOR_TEXT = {
     ]
 }
 
+# ---------------------------------------------------------
+# PLAYER FLAVOR TEXT
+# ---------------------------------------------------------
+
 PLAYER_FLAVOR = {
     "attack": [
         "{player} charges forward and strikes the {boss} for **{dmg}** damage!",
@@ -149,6 +133,21 @@ PLAYER_FLAVOR = {
 }
 
 # ---------------------------------------------------------
+# RARITY BONUSES (Option A)
+# ---------------------------------------------------------
+
+RARITY_BONUS = {
+    "common": 10,
+    "uncommon": 30,
+    "rare": 70,
+    "legendary": 120,
+    "godlike": 200,
+}
+
+BASE_HEALTH = 100
+BASE_DAMAGE = 5
+
+# ---------------------------------------------------------
 # BOSS FIGHT CLASS
 # ---------------------------------------------------------
 
@@ -166,15 +165,10 @@ class BossFight:
         self.killing_blow_user_id = None
 
     def add_player(self, user: discord.Member, inventory: dict):
-        if user.id in self.players:
-            return
-
-        # Load equipped gear
         equipped = inventory.get("equipped", {})
         weapon = equipped.get("weapon")
-        defense_item = equipped.get("defense")
+        defense = equipped.get("defense")
 
-        # Base + potion HP bonus
         potion_bonus = inventory.get("potion_maxhp_bonus", 0)
         max_hp = BASE_HEALTH + (20 * potion_bonus)
 
@@ -184,7 +178,7 @@ class BossFight:
             "max_hp": max_hp,
             "inventory": inventory,
             "equipped_weapon": weapon,
-            "equipped_defense": defense_item,
+            "equipped_defense": defense,
             "protecting": False,
             "alive": True
         }
@@ -192,7 +186,7 @@ class BossFight:
     def start_battle(self):
         self.joining = False
         self.active = True
-        self.turn_order = [uid for uid in self.players.keys() if self.players[uid]["alive"]]
+        self.turn_order = [uid for uid in self.players if self.players[uid]["alive"]]
 
     def get_current_player_id(self):
         if not self.turn_order:
@@ -242,26 +236,28 @@ class BossFightCog(commands.Cog):
 
     async def get_user(self, user_id: int):
         async with aiosqlite.connect("economy.db") as db:
-            cursor = await db.execute("SELECT money, inventory FROM Economy WHERE user_id = ?", (user_id,))
+            cursor = await db.execute(
+                "SELECT money, inventory FROM Economy WHERE user_id = ?", (user_id,)
+            )
             row = await cursor.fetchone()
 
             if row is None:
-                empty_inv = {}
+                inv = {}
                 await db.execute(
                     "INSERT INTO Economy (user_id, money, inventory) VALUES (?, ?, ?)",
-                    (user_id, 100, json.dumps(empty_inv))
+                    (user_id, 100, json.dumps(inv)),
                 )
                 await db.commit()
-                return 100, empty_inv
+                return 100, {}
 
-            money, inventory = row
-            return money, json.loads(inventory)
+            money, inv_json = row
+            return money, json.loads(inv_json)
 
     async def update_user(self, user_id: int, money: int, inventory: dict):
         async with aiosqlite.connect("economy.db") as db:
             await db.execute(
                 "UPDATE Economy SET money = ?, inventory = ? WHERE user_id = ?",
-                (money, json.dumps(inventory), user_id)
+                (money, json.dumps(inventory), user_id),
             )
             await db.commit()
 
@@ -273,12 +269,16 @@ class BossFightCog(commands.Cog):
     async def bossfight(self, interaction: discord.Interaction):
         guild = interaction.guild
         if guild is None:
-            return await interaction.response.send_message("Use this in a server.", ephemeral=True)
+            return await interaction.response.send_message(
+                "This command can only be used in a server.", ephemeral=True
+            )
 
         guild_id = guild.id
 
         if guild_id in self.fights and (self.fights[guild_id].active or self.fights[guild_id].joining):
-            return await interaction.response.send_message("A boss fight is already active.", ephemeral=True)
+            return await interaction.response.send_message(
+                "❌ A boss fight is already active.", ephemeral=True
+            )
 
         boss = random.choice(BOSSES)
         fight = BossFight(boss, interaction.channel)
@@ -320,7 +320,7 @@ class BossFightCog(commands.Cog):
         await fight.channel.send(
             "📘 **How to Fight**\n"
             "`attack` — Deal damage (weapon increases damage)\n"
-            "`protect` — Reduce incoming damage (armor/shield helps)\n"
+            "`protect` — Reduce incoming damage\n"
             "`apple` — Heal 20 HP\n"
             "`potion` — Increase max HP by 20\n"
             "`run` — Leave the fight\n"
@@ -380,17 +380,15 @@ class BossFightCog(commands.Cog):
                 fight.next_turn()
                 continue
 
-            # -------------------------
-            # STAT PANEL
-            # -------------------------
             weapon = state["equipped_weapon"]
-            defense_item = state["equipped_defense"]
+            defense = state["equipped_defense"]
 
             weapon_text = f"{weapon['name']} ({weapon['rarity'].capitalize()})" if weapon else "None"
-            defense_text = f"{defense_item['name']} ({defense_item['rarity'].capitalize()})" if defense_item else "None"
+            defense_text = f"{defense['name']} ({defense['rarity'].capitalize()})" if defense else "None"
 
-            apples = state["inventory"].get("apple", 0)
-            potions = state["inventory"].get("potion", 0)
+            cons = state["inventory"].get("consumables", {})
+            apples = cons.get("apple", 0)
+            potions = cons.get("potion", 0)
 
             await fight.channel.send(
                 f"🔔 {user.mention}, **your turn!**\n\n"
@@ -448,16 +446,10 @@ class BossFightCog(commands.Cog):
         money, inventory = await self.get_user(user.id)
         state["inventory"] = inventory
 
-        # -------------------------
         # ATTACK
-        # -------------------------
         if action == "attack":
             weapon = state["equipped_weapon"]
-            rarity_bonus = 0
-
-            if weapon:
-                rarity_bonus = RARITY_BONUS.get(weapon["rarity"], 0)
-
+            rarity_bonus = RARITY_BONUS.get(weapon["rarity"], 0) if weapon else 0
             dmg = BASE_DAMAGE + rarity_bonus
 
             fight.boss_hp = max(0, fight.boss_hp - dmg)
@@ -470,19 +462,16 @@ class BossFightCog(commands.Cog):
                 line.format(player=user.mention, boss=fight.boss["name"], dmg=dmg)
             )
 
-        # -------------------------
         # PROTECT
-        # -------------------------
         elif action == "protect":
             state["protecting"] = True
             line = random.choice(PLAYER_FLAVOR["protect"])
             await fight.channel.send(line.format(player=user.mention))
 
-        # -------------------------
         # APPLE
-        # -------------------------
         elif action == "apple":
-            apples = inventory.get("apple", 0)
+            cons = inventory.setdefault("consumables", {})
+            apples = cons.get("apple", 0)
             if apples <= 0:
                 await fight.channel.send(f"🍎 {user.mention} has no apples!")
             else:
@@ -490,9 +479,7 @@ class BossFightCog(commands.Cog):
                 old_hp = state["hp"]
                 state["hp"] = min(state["max_hp"], state["hp"] + heal)
 
-                inventory["apple"] = apples - 1
-                if inventory["apple"] <= 0:
-                    inventory.pop("apple")
+                cons["apple"] = apples - 1
 
                 await self.update_user(user.id, money, inventory)
 
@@ -500,17 +487,14 @@ class BossFightCog(commands.Cog):
                 line = random.choice(PLAYER_FLAVOR["apple"])
                 await fight.channel.send(line.format(player=user.mention, heal=healed))
 
-        # -------------------------
         # POTION
-        # -------------------------
         elif action == "potion":
-            potions = inventory.get("potion", 0)
+            cons = inventory.setdefault("consumables", {})
+            potions = cons.get("potion", 0)
             if potions <= 0:
                 await fight.channel.send(f"🧪 {user.mention} has no potions!")
             else:
-                inventory["potion"] = potions - 1
-                if inventory["potion"] <= 0:
-                    inventory.pop("potion")
+                cons["potion"] = potions - 1
 
                 bonus_count = inventory.get("potion_maxhp_bonus", 0) + 1
                 inventory["potion_maxhp_bonus"] = bonus_count
@@ -523,15 +507,14 @@ class BossFightCog(commands.Cog):
                 line = random.choice(PLAYER_FLAVOR["potion"])
                 await fight.channel.send(line.format(player=user.mention))
 
-        # -------------------------
         # RUN
-        # -------------------------
         elif action == "run":
             fight.remove_player(user.id)
             line = random.choice(PLAYER_FLAVOR["run"])
             await fight.channel.send(line.format(player=user.mention))
             return
 
+        # RESET PROTECTION (only if not protect)
         if action != "protect":
             state["protecting"] = False
 
@@ -551,9 +534,11 @@ class BossFightCog(commands.Cog):
 
         reduction = 0.0
 
+        # Protect reduces 30%
         if target_state["protecting"]:
             reduction += 0.30
 
+        # Defense item rarity reduces more
         defense_item = target_state["equipped_defense"]
         if defense_item:
             rarity = defense_item["rarity"]
@@ -565,10 +550,11 @@ class BossFightCog(commands.Cog):
         final_dmg = max(1, int(dmg * (1 - reduction)))
 
         target_state["hp"] -= final_dmg
-        target_state["protecting"] = False
+        target_state["protecting"] = False  # protection consumed
 
         boss_name = fight.boss["name"]
 
+        # Flavor selection
         if final_dmg > dmg_max * 0.75:
             line = random.choice(FLAVOR_TEXT["critical"])
         elif boss_name in FLAVOR_TEXT and random.random() < 0.5:
@@ -590,6 +576,7 @@ class BossFightCog(commands.Cog):
             f"🩸 {target.mention} now has **{target_state['hp']} / {target_state['max_hp']} HP**."
         )
 
+        # Player death
         if target_state["hp"] <= 0:
             target_state["hp"] = 0
             target_state["alive"] = False
@@ -601,9 +588,10 @@ class BossFightCog(commands.Cog):
 
             await fight.channel.send(f"💀 {target.mention} has fallen!")
 
-        # ---------------------------------------------------------
+    # ---------------------------------------------------------
     # VICTORY
     # ---------------------------------------------------------
+
     async def handle_victory(self, fight: BossFight, guild_id: int):
         fight.active = False
         survivors = fight.alive_players()
@@ -614,7 +602,7 @@ class BossFightCog(commands.Cog):
             f"All surviving players earn **${boss['reward']}**!"
         )
 
-        # Reward all survivors
+        # Reward survivors
         for state in survivors:
             user = state["user"]
             money, inv = await self.get_user(user.id)
@@ -632,12 +620,12 @@ class BossFightCog(commands.Cog):
                 f"🏅 {killer.mention} dealt the **killing blow** and earns an extra **${boss['bonus']}**!"
             )
 
-        # Cleanup
         self.fights.pop(guild_id, None)
 
     # ---------------------------------------------------------
     # DEFEAT
     # ---------------------------------------------------------
+
     async def handle_defeat(self, fight: BossFight, guild_id: int):
         fight.active = False
         boss = fight.boss["name"]
@@ -646,11 +634,11 @@ class BossFightCog(commands.Cog):
             f"💀 The **{boss}** stands victorious. All challengers have fallen or fled..."
         )
 
-        # Cleanup
         self.fights.pop(guild_id, None)
 
 # ---------------------------------------------------------
 # COG SETUP
 # ---------------------------------------------------------
+
 async def setup(bot):
     await bot.add_cog(BossFightCog(bot))

@@ -30,15 +30,15 @@ QUESTS = [
 
 # Same rarity system as your Economy/Bossfight
 RARITY_BONUS = {
-    "common": 0,
-    "uncommon": 3,
-    "rare": 7,
-    "legendary": 12,
-    "godlike": 20,
+    "common": 10,
+    "uncommon": 30,
+    "rare": 70,
+    "legendary": 120,
+    "godlike": 200,
 }
 
-QUEST_MIN_DELAY = 120   # seconds
-QUEST_MAX_DELAY = 300   # seconds
+QUEST_MIN_DELAY = 300   # seconds
+QUEST_MAX_DELAY = 600   # seconds
 QUEST_TIMEOUT = 60      # seconds
 
 

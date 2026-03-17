@@ -1,10 +1,10 @@
-﻿# cogs/economy.py
-import random
+﻿import random
 from typing import Dict, List, Optional, Literal
 
 import discord
 from discord.ext import commands
 from discord import app_commands
+from discord.ui import View, Button
 import aiosqlite
 import json
 
@@ -15,11 +15,11 @@ import json
 RARITY_ORDER = ["common", "uncommon", "rare", "legendary", "godlike"]
 
 RARITY_BONUS = {
-    "common": 0,
-    "uncommon": 3,
-    "rare": 7,
-    "legendary": 12,
-    "godlike": 20,
+    "common": 10,
+    "uncommon": 30,
+    "rare": 70,
+    "legendary": 120,
+    "godlike": 200,
 }
 
 CRATE_RARITY_WEIGHTS = {
@@ -189,9 +189,44 @@ def item_display_for_autocomplete(item: Dict) -> str:
     else:
         return f"{item['name']} — {rarity} {t} — DEF: +{bonus}"
 
+# -----------------------------
+# View helpers
+# -----------------------------
+
+class ProfileView(View):
+    def __init__(self, pages, owner: discord.User):
+        super().__init__(timeout=60)
+        self.pages = pages
+        self.index = 0
+        self.owner = owner
+
+        prev_btn = Button(label="◀ Previous", style=discord.ButtonStyle.secondary)
+        next_btn = Button(label="Next ▶", style=discord.ButtonStyle.secondary)
+
+        async def prev_callback(interaction: discord.Interaction):
+            if interaction.user.id != self.owner.id:
+                return await interaction.response.send_message(
+                    "This isn't your profile.", ephemeral=True
+                )
+            self.index = (self.index - 1) % len(self.pages)
+            await interaction.response.edit_message(embed=self.pages[self.index], view=self)
+
+        async def next_callback(interaction: discord.Interaction):
+            if interaction.user.id != self.owner.id:
+                return await interaction.response.send_message(
+                    "This isn't your profile.", ephemeral=True
+                )
+            self.index = (self.index + 1) % len(self.pages)
+            await interaction.response.edit_message(embed=self.pages[self.index], view=self)
+
+        prev_btn.callback = prev_callback
+        next_btn.callback = next_callback
+
+        self.add_item(prev_btn)
+        self.add_item(next_btn)
 
 # -----------------------------
-# Economy Cog (DB-backed)
+# Economy Cog
 # -----------------------------
 
 class Economy(commands.Cog):
@@ -252,18 +287,28 @@ class Economy(commands.Cog):
 
     @app_commands.command(name="profile", description="View your profile, stats, and inventory.")
     async def profile(self, interaction: discord.Interaction):
-        user_id = interaction.user.id
+        user = interaction.user
+        user_id = user.id
         money, inv = await self.get_user(user_id)
         stats = compute_stats(inv)
 
-        embed = discord.Embed(
-            title=f"{interaction.user.display_name}'s Profile",
+        equipped = inv.get("equipped", {})
+        weapon = equipped.get("weapon")
+        defense = equipped.get("defense")
+
+        cons = inv.get("consumables", {})
+        equipment = inv.get("equipment", {})
+        crates = inv.get("crates", 0)
+
+        # -------------------------
+        # PAGE 1 — STATS & EQUIPPED
+        # -------------------------
+        embed1 = discord.Embed(
+            title=f"{user.display_name}'s Profile — Stats",
             color=discord.Color.dark_red(),
         )
-
-        embed.add_field(name="💰 Balance", value=f"${money}", inline=False)
-
-        embed.add_field(
+        embed1.add_field(name="💰 Balance", value=f"${money}", inline=False)
+        embed1.add_field(
             name="🩸 Stats",
             value=(
                 f"❤️ Health: {stats['health']}\n"
@@ -273,53 +318,92 @@ class Economy(commands.Cog):
             inline=False,
         )
 
-        cons = inv["consumables"]
-        cons_lines = []
-        if cons.get("apple", 0) > 0:
-            cons_lines.append(f"🍎 Apple × {cons['apple']}")
-        if cons.get("potion", 0) > 0:
-            cons_lines.append(f"🧪 Potion × {cons['potion']}")
-        if not cons_lines:
-            cons_lines.append("None")
-        embed.add_field(name="🎒 Consumables", value="\n".join(cons_lines), inline=False)
+        equipped_lines = []
+        if weapon:
+            w_bonus = get_rarity_bonus(weapon["rarity"])
+            equipped_lines.append(
+                f"🗡️ {weapon['name']} ({weapon['rarity'].capitalize()} {weapon['type'].capitalize()}) — DMG +{w_bonus}"
+            )
+        else:
+            equipped_lines.append("🗡️ Weapon: None")
 
-        eq_lines = []
+        if defense:
+            d_bonus = get_rarity_bonus(defense["rarity"])
+            equipped_lines.append(
+                f"🛡️ {defense['name']} ({defense['rarity'].capitalize()} {defense['type'].capitalize()}) — DEF +{d_bonus}"
+            )
+        else:
+            equipped_lines.append("🛡️ Defense: None")
+
+        embed1.add_field(
+            name="✨ Equipped",
+            value="\n".join(equipped_lines)[:1024],
+            inline=False,
+        )
+
+        # -------------------------
+        # PAGE 2 — EQUIPMENT
+        # -------------------------
+        embed2 = discord.Embed(
+            title=f"{user.display_name}'s Profile — Equipment",
+            color=discord.Color.dark_red(),
+        )
+
+        eq_blocks = []
         for t in WEAPON_TYPES + DEFENSIVE_TYPES:
-            items = inv["equipment"].get(t, [])
+            items = equipment.get(t, [])
             if not items:
                 continue
             header = f"**{t.capitalize()}s:**"
             lines = [header]
             for item in items:
                 lines.append(f"• {format_item_line(item)}")
-            eq_lines.append("\n".join(lines))
-        if not eq_lines:
-            eq_lines.append("No equipment owned yet.")
-        embed.add_field(name="⚔️ Equipment", value="\n\n".join(eq_lines), inline=False)
+            block = "\n".join(lines)
+            eq_blocks.append(block)
 
-        equipped_lines = []
-        weapon = inv["equipped"].get("weapon")
-        defense = inv["equipped"].get("defense")
+        if not eq_blocks:
+            eq_blocks.append("No equipment owned yet.")
 
-        if weapon:
-            bonus = get_rarity_bonus(weapon["rarity"])
-            equipped_lines.append(
-                f"🗡️ Weapon: {weapon['name']} ({weapon['rarity'].capitalize()}) — DMG +{bonus}"
-            )
-        else:
-            equipped_lines.append("🗡️ Weapon: None")
+        eq_text = "\n\n".join(eq_blocks)
+        embed2.add_field(
+            name="⚔️ Equipment",
+            value=eq_text[:1024],
+            inline=False,
+        )
 
-        if defense:
-            bonus = get_rarity_bonus(defense["rarity"])
-            equipped_lines.append(
-                f"🛡️ Defense: {defense['name']} ({defense['rarity'].capitalize()}) — DEF +{bonus}"
-            )
-        else:
-            equipped_lines.append("🛡️ Defense: None")
+        # -------------------------
+        # PAGE 3 — INVENTORY
+        # -------------------------
+        embed3 = discord.Embed(
+            title=f"{user.display_name}'s Profile — Inventory",
+            color=discord.Color.dark_red(),
+        )
 
-        embed.add_field(name="✨ Equipped", value="\n".join(equipped_lines), inline=False)
+        cons_lines = []
+        for k, v in cons.items():
+            if v > 0:
+                emoji = "🍎" if k == "apple" else "🧪" if k == "potion" else "🎒"
+                cons_lines.append(f"{emoji} {k.capitalize()} × {v}")
+        if not cons_lines:
+            cons_lines.append("None")
 
-        await interaction.response.send_message(embed=embed)
+        crates_text = f"🎁 Dark Crates × {crates}" if crates > 0 else "None"
+
+        embed3.add_field(
+            name="🎒 Consumables",
+            value="\n".join(cons_lines)[:1024],
+            inline=False,
+        )
+        embed3.add_field(
+            name="🎁 Crates",
+            value=crates_text[:1024],
+            inline=False,
+        )
+
+        pages = [embed1, embed2, embed3]
+        view = ProfileView(pages, user)
+
+        await interaction.response.send_message(embed=embed1, view=view)
 
     # -----------------------------
     # Shop
@@ -536,11 +620,14 @@ class Economy(commands.Cog):
         interaction: discord.Interaction,
         current: str,
     ) -> List[app_commands.Choice[str]]:
+
         user_id = interaction.user.id
         _, inv = await self.get_user(user_id)
         inv = ensure_inventory_structure(inv)
 
-        slot = interaction.namespace.slot.value if hasattr(interaction, "namespace") else None
+        # slot is already a string ("weapon" or "defense")
+        slot = getattr(interaction.namespace, "slot", None)
+
         if slot not in ["weapon", "defense"]:
             return []
 
@@ -550,15 +637,19 @@ class Economy(commands.Cog):
             for item in items:
                 if not item_matches_slot(t, slot):
                     continue
+
                 display = item_display_for_autocomplete({"type": t, **item})
+
                 if current.lower() in display.lower():
                     choices.append(app_commands.Choice(name=display, value=item["name"]))
+
                 if len(choices) >= 25:
                     break
             if len(choices) >= 25:
                 break
 
         return choices
+
 
     @app_commands.command(name="equip", description="Equip a weapon or defensive item.")
     @app_commands.describe(
