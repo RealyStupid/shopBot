@@ -4,9 +4,10 @@ from typing import Dict, List, Optional, Literal
 import discord
 from discord.ext import commands
 from discord import app_commands
-from discord.ui import View, Button
 import aiosqlite
 import json
+
+from discord.ui import View, Button
 
 # -----------------------------
 # Constants & Loot Tables
@@ -94,6 +95,9 @@ BASE_HEALTH = 100
 BASE_DAMAGE = 5
 BASE_DEFENSE = 0
 
+MAX_WEAPONS = 20
+MAX_DEFENSE = 20
+MAX_CRATES = 10
 
 # -----------------------------
 # Inventory helpers
@@ -189,8 +193,24 @@ def item_display_for_autocomplete(item: Dict) -> str:
     else:
         return f"{item['name']} — {rarity} {t} — DEF: +{bonus}"
 
+def count_weapons(inv):
+    return sum(len(inv["equipment"][t]) for t in WEAPON_TYPES)
+
+def count_defense(inv):
+    return sum(len(inv["equipment"][t]) for t in DEFENSIVE_TYPES)
+
+def can_add_equipment(inv, item_type):
+    if item_type in WEAPON_TYPES:
+        return count_weapons(inv) < MAX_WEAPONS
+    if item_type in DEFENSIVE_TYPES:
+        return count_defense(inv) < MAX_DEFENSE
+    return False
+
+def can_add_crate(inv):
+    return inv["crates"] < MAX_CRATES
+
 # -----------------------------
-# View helpers
+# Pagination View for /profile
 # -----------------------------
 
 class ProfileView(View):
@@ -224,6 +244,7 @@ class ProfileView(View):
 
         self.add_item(prev_btn)
         self.add_item(next_btn)
+
 
 # -----------------------------
 # Economy Cog
@@ -282,7 +303,7 @@ class Economy(commands.Cog):
             await db.commit()
 
     # -----------------------------
-    # /profile
+    # /profile (Paginated)
     # -----------------------------
 
     @app_commands.command(name="profile", description="View your profile, stats, and inventory.")
@@ -440,69 +461,207 @@ class Economy(commands.Cog):
 
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="buy", description="Buy an item from the shop.")
-    @app_commands.describe(
-        category="What are you buying?",
-        item_type="Type of gear (if buying gear).",
-        rarity="Rarity (common/uncommon) for gear.",
-        consumable="Consumable name if buying consumables.",
-    )
-    @app_commands.choices(
-        category=[
-            app_commands.Choice(name="Gear", value="gear"),
-            app_commands.Choice(name="Consumable", value="consumable"),
-            app_commands.Choice(name="Crate", value="crate"),
-        ]
-    )
-    async def buy(
+    # -----------------------------
+    # /buy Autocomplete
+    # -----------------------------
+
+    async def buy_autocomplete(
         self,
         interaction: discord.Interaction,
-        category: app_commands.Choice[str],
-        item_type: Optional[Literal["sword", "axe", "dagger", "bow", "staff", "shield", "armor"]] = None,
-        rarity: Optional[Literal["common", "uncommon"]] = None,
-        consumable: Optional[Literal["apple", "potion"]] = None,
+        current: str,
     ):
+        choices = []
+
+        # --- Common & Uncommon Gear ---
+        for rarity in ["common", "uncommon"]:
+            for t in WEAPON_TYPES + DEFENSIVE_TYPES:
+                name = SHOP_NAMES[rarity][t]
+                display = f"[{rarity.capitalize()}] {name}"
+                if current.lower() in display.lower():
+                    choices.append(app_commands.Choice(name=display, value=name))
+                if len(choices) >= 25:
+                    return choices
+
+        # --- Consumables ---
+        consumables = {
+            "Apple": "apple",
+            "Potion": "potion",
+        }
+        for display, key in consumables.items():
+            full = f"[Consumable] {display}"
+            if current.lower() in full.lower():
+                choices.append(app_commands.Choice(name=full, value=key))
+            if len(choices) >= 25:
+                return choices
+
+        # --- Crate ---
+        crate_display = "[Crate] Dark Crate"
+        if current.lower() in crate_display.lower():
+            choices.append(app_commands.Choice(name=crate_display, value="dark_crate"))
+
+        return choices
+
+    # -----------------------------
+    # /buy
+    # -----------------------------
+
+    @app_commands.command(name="buy", description="Buy an item from the shop.")
+    @app_commands.autocomplete(item_name=buy_autocomplete)
+    @app_commands.describe(
+        item_name="The item you want to buy.",
+        quantity="How many (only for consumables)."
+    )
+    async def buy(self, interaction: discord.Interaction, item_name: str, quantity: Optional[int] = 1):
         user_id = interaction.user.id
         money, inv = await self.get_user(user_id)
 
-        if category.value == "gear":
-            if not item_type or not rarity:
-                await interaction.response.send_message("You must specify item_type and rarity for gear.", ephemeral=True)
-                return
-            name = SHOP_NAMES[rarity][item_type]
-            cost = 50 if rarity == "common" else 150
-            if money < cost:
-                await interaction.response.send_message("You don't have enough money.", ephemeral=True)
-                return
-            money -= cost
-            inv["equipment"][item_type].append({"name": name, "rarity": rarity})
+        # -------------------------
+        # 1. Gear (Common/Uncommon)
+        # -------------------------
+        for rarity in ["common", "uncommon"]:
+            for t in WEAPON_TYPES + DEFENSIVE_TYPES:
+                shop_name = SHOP_NAMES[rarity][t]
+                if item_name == shop_name:
+
+                    # INVENTORY LIMIT CHECK
+                    if not can_add_equipment(inv, t):
+                        limit = MAX_WEAPONS if t in WEAPON_TYPES else MAX_DEFENSE
+                        return await interaction.response.send_message(
+                            f"Your **{t}** inventory is full (max {limit}). Sell something first.",
+                            ephemeral=True
+                        )
+
+                    cost = 50 if rarity == "common" else 150
+
+                    if money < cost:
+                        return await interaction.response.send_message(
+                            "You don't have enough money.", ephemeral=True
+                        )
+
+                    money -= cost
+                    inv["equipment"][t].append({"name": shop_name, "rarity": rarity})
+
+                    await self.update_user(user_id, money, inv)
+                    return await interaction.response.send_message(
+                        f"You bought **{shop_name}** ({rarity.capitalize()} {t.capitalize()}) for ${cost}."
+                    )
+
+        # -------------------------
+        # 2. Consumables
+        # -------------------------
+        consumable_map = {
+            "apple": ("Apple", 10),
+            "potion": ("Potion", 50),
+        }
+
+        if item_name in consumable_map:
+            display_name, cost_per = consumable_map[item_name]
+
+            if quantity < 1:
+                return await interaction.response.send_message(
+                    "Quantity must be at least 1.", ephemeral=True
+                )
+
+            total_cost = cost_per * quantity
+
+            if money < total_cost:
+                return await interaction.response.send_message(
+                    f"You need ${total_cost}, but you only have ${money}.",
+                    ephemeral=True,
+                )
+
+            money -= total_cost
+            inv["consumables"][item_name] = inv["consumables"].get(item_name, 0) + quantity
+
             await self.update_user(user_id, money, inv)
-            await interaction.response.send_message(
-                f"You bought **{name}** ({rarity.capitalize()} {item_type.capitalize()}) for ${cost}."
+            return await interaction.response.send_message(
+                f"You bought **{quantity}× {display_name}** for ${total_cost}."
             )
 
-        elif category.value == "consumable":
-            if not consumable:
-                await interaction.response.send_message("You must specify which consumable to buy.", ephemeral=True)
-                return
-            cost = 10 if consumable == "apple" else 50
-            if money < cost:
-                await interaction.response.send_message("You don't have enough money.", ephemeral=True)
-                return
-            money -= cost
-            inv["consumables"][consumable] = inv["consumables"].get(consumable, 0) + 1
-            await self.update_user(user_id, money, inv)
-            await interaction.response.send_message(f"You bought 1 **{consumable}** for ${cost}.")
+        # -------------------------
+        # 3. Crates
+        # -------------------------
+        if item_name == "dark_crate":
 
-        elif category.value == "crate":
+            if not can_add_crate(inv):
+                return await interaction.response.send_message(
+                    f"You cannot hold more crates (max {MAX_CRATES}).",
+                    ephemeral=True
+                )
+
             cost = 250
+
             if money < cost:
-                await interaction.response.send_message("You don't have enough money for a crate.", ephemeral=True)
-                return
+                return await interaction.response.send_message(
+                    "You don't have enough money for a Dark Crate.", ephemeral=True
+                )
+
             money -= cost
             inv["crates"] += 1
+
             await self.update_user(user_id, money, inv)
-            await interaction.response.send_message("You bought 1 **Dark Crate** for $250.")
+            return await interaction.response.send_message(
+                "You bought **1 Dark Crate** for $250."
+            )
+
+        # -------------------------
+        # 4. Invalid item
+        # -------------------------
+        return await interaction.response.send_message(
+            "That item is not sold in the shop.", ephemeral=True
+        )
+
+    # -----------------------------
+    # /sell autocomplete
+    # -----------------------------
+
+    async def sell_autocomplete(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ):
+        user_id = interaction.user.id
+        _, inv = await self.get_user(user_id)
+        inv = ensure_inventory_structure(inv)
+
+        choices = []
+
+        # -------------------------
+        # Gear (weapons + defense)
+        # -------------------------
+        for t, items in inv["equipment"].items():
+            for item in items:
+                display = f"[{item['rarity'].capitalize()}] {item['name']} ({t.capitalize()})"
+                if current.lower() in display.lower():
+                    choices.append(app_commands.Choice(name=display, value=item["name"]))
+                if len(choices) >= 25:
+                    return choices
+
+        # -------------------------
+        # Consumables
+        # -------------------------
+        consumable_map = {
+            "apple": "Apple",
+            "potion": "Potion",
+        }
+
+        for key, display in consumable_map.items():
+            if inv["consumables"].get(key, 0) > 0:
+                full = f"[Consumable] {display}"
+                if current.lower() in full.lower():
+                    choices.append(app_commands.Choice(name=full, value=key))
+                if len(choices) >= 25:
+                    return choices
+
+        # -------------------------
+        # Crates
+        # -------------------------
+        if inv["crates"] > 0:
+            crate_display = "[Crate] Dark Crate"
+            if current.lower() in crate_display.lower():
+                choices.append(app_commands.Choice(name=crate_display, value="dark_crate"))
+
+        return choices
 
     # -----------------------------
     # Crates
@@ -514,34 +673,64 @@ class Economy(commands.Cog):
         money, inv = await self.get_user(user_id)
 
         if inv["crates"] <= 0:
-            await interaction.response.send_message("You don't have any crates to open.", ephemeral=True)
+            await interaction.response.send_message(
+                "You don't have any crates to open.",
+                ephemeral=True
+            )
             return
 
+        # Remove 1 crate
         inv["crates"] -= 1
 
         count = roll_item_count()
         obtained = []
+
         for _ in range(count):
             item = generate_crate_item()
-            inv["equipment"][item["type"]].append({"name": item["name"], "rarity": item["rarity"]})
+            item_type = item["type"]
+
+            # -----------------------------
+            # INVENTORY LIMIT CHECK
+            # -----------------------------
+            if not can_add_equipment(inv, item_type):
+                # Stop giving items once full
+                break
+
+            # Add item
+            inv["equipment"][item_type].append({
+                "name": item["name"],
+                "rarity": item["rarity"]
+            })
             obtained.append(item)
 
         await self.update_user(user_id, money, inv)
 
-        lines = [
-            f"• {item['name']} ({item['rarity'].capitalize()} {item['type'].capitalize()})"
-            for item in obtained
-        ]
+        # Build result text
+        if obtained:
+            lines = [
+                f"• {item['name']} ({item['rarity'].capitalize()} {item['type'].capitalize()})"
+                for item in obtained
+            ]
+            description = (
+                f"You received **{len(obtained)}** item(s):\n" +
+                "\n".join(lines)
+            )
+        else:
+            description = (
+                "Your inventory is full — no items could be added.\n"
+                "Sell some equipment and try again."
+            )
 
         embed = discord.Embed(
             title="🎁 Dark Crate Opened",
-            description=f"You received **{count}** item(s):\n" + "\n".join(lines),
+            description=description,
             color=discord.Color.dark_purple(),
         )
+
         await interaction.response.send_message(embed=embed)
 
     # -----------------------------
-    # Equipment & Loadout
+    # Equipment (View All)
     # -----------------------------
 
     @app_commands.command(name="equipment", description="View all your equipment.")
@@ -570,6 +759,123 @@ class Economy(commands.Cog):
 
         embed.description = "\n\n".join(eq_lines)
         await interaction.response.send_message(embed=embed)
+
+    # -----------------------------
+    # /sell command
+    # -----------------------------
+
+    @app_commands.command(name="sell", description="Sell an item from your inventory.")
+    @app_commands.autocomplete(item_name=sell_autocomplete)
+    @app_commands.describe(
+        item_name="The item you want to sell.",
+        quantity="How many (only for consumables)."
+    )
+    async def sell(
+        self,
+        interaction: discord.Interaction,
+        item_name: str,
+        quantity: Optional[int] = 1,
+    ):
+        user_id = interaction.user.id
+        money, inv = await self.get_user(user_id)
+        inv = ensure_inventory_structure(inv)
+
+        # -------------------------
+        # 1. Gear (weapons + defense)
+        # -------------------------
+        for t, items in inv["equipment"].items():
+            for item in items:
+                if item["name"] == item_name:
+
+                    # Determine sell price (50% of buy price)
+                    rarity = item["rarity"]
+                    buy_price = 50 if rarity == "common" else 150 if rarity == "uncommon" else None
+
+                    # Crate gear (rare+) has no buy price → use rarity table
+                    if buy_price is None:
+                        rarity_sell = {
+                            "rare": 150,
+                            "legendary": 300,
+                            "godlike": 500,
+                        }
+                        sell_price = rarity_sell[rarity]
+                    else:
+                        sell_price = buy_price // 2
+
+                    # Remove item
+                    inv["equipment"][t].remove(item)
+                    money += sell_price
+
+                    await self.update_user(user_id, money, inv)
+                    return await interaction.response.send_message(
+                        f"You sold **{item_name}** ({rarity.capitalize()} {t.capitalize()}) for **${sell_price}**."
+                    )
+
+        # -------------------------
+        # 2. Consumables
+        # -------------------------
+        consumable_map = {
+            "apple": ("Apple", 10),
+            "potion": ("Potion", 50),
+        }
+
+        if item_name in consumable_map:
+            display_name, buy_price = consumable_map[item_name]
+
+            if quantity < 1:
+                return await interaction.response.send_message(
+                    "Quantity must be at least 1.",
+                    ephemeral=True
+                )
+
+            owned = inv["consumables"].get(item_name, 0)
+            if owned < quantity:
+                return await interaction.response.send_message(
+                    f"You only have **{owned}× {display_name}**.",
+                    ephemeral=True
+                )
+
+            sell_price = (buy_price // 2) * quantity
+
+            inv["consumables"][item_name] -= quantity
+            money += sell_price
+
+            await self.update_user(user_id, money, inv)
+            return await interaction.response.send_message(
+                f"You sold **{quantity}× {display_name}** for **${sell_price}**."
+            )
+
+        # -------------------------
+        # 3. Crates
+        # -------------------------
+        if item_name == "dark_crate":
+            if inv["crates"] <= 0:
+                return await interaction.response.send_message(
+                    "You don't have any crates to sell.",
+                    ephemeral=True
+                )
+
+            sell_price = 250 // 2  # 50% of buy price = 125
+
+            inv["crates"] -= 1
+            money += sell_price
+
+            await self.update_user(user_id, money, inv)
+            return await interaction.response.send_message(
+                f"You sold **1 Dark Crate** for **${sell_price}**."
+            )
+
+        # -------------------------
+        # 4. Invalid item
+        # -------------------------
+        return await interaction.response.send_message(
+            "You don't own that item.",
+            ephemeral=True
+        )
+
+    # -----------------------------
+    # Loadout (Equipped Items)
+    # -----------------------------
 
     @app_commands.command(name="loadout", description="View your currently equipped gear.")
     async def loadout(self, interaction: discord.Interaction):
@@ -625,7 +931,6 @@ class Economy(commands.Cog):
         _, inv = await self.get_user(user_id)
         inv = ensure_inventory_structure(inv)
 
-        # slot is already a string ("weapon" or "defense")
         slot = getattr(interaction.namespace, "slot", None)
 
         if slot not in ["weapon", "defense"]:
@@ -650,7 +955,6 @@ class Economy(commands.Cog):
 
         return choices
 
-
     @app_commands.command(name="equip", description="Equip a weapon or defensive item.")
     @app_commands.describe(
         slot="Which slot to equip to (weapon or defense).",
@@ -673,7 +977,7 @@ class Economy(commands.Cog):
         money, inv = await self.get_user(user_id)
         inv = ensure_inventory_structure(inv)
 
-        slot_value = slot.value  # "weapon" or "defense"
+        slot_value = slot.value
 
         found_item = None
         found_type = None
@@ -750,6 +1054,9 @@ class Economy(commands.Cog):
             f"Gave {user.mention} ${amount}. New balance: ${money}."
         )
 
+# -----------------------------
+# Cog Setup
+# -----------------------------
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Economy(bot))
