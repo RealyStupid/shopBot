@@ -193,6 +193,11 @@ def item_display_for_autocomplete(item: Dict) -> str:
     else:
         return f"{item['name']} — {rarity} {t} — DEF: +{bonus}"
 
+def is_bot_owner():
+    async def predicate(interaction: discord.Interaction):
+        return interaction.user.id == interaction.client.owner_id
+    return app_commands.check(predicate)
+
 def count_weapons(inv):
     return sum(len(inv["equipment"][t]) for t in WEAPON_TYPES)
 
@@ -1044,7 +1049,7 @@ class Economy(commands.Cog):
     # -----------------------------
 
     @app_commands.command(name="givemoney", description="[Debug] Give yourself money.")
-    @commands.is_owner()
+    @is_bot_owner()
     async def givemoney(self, interaction: discord.Interaction, amount: int, user: discord.User):
         user_id = user.id
         money, inv = await self.get_user(user_id)
